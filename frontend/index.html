@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GAME OF TAGS</title>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
+<link rel="stylesheet" href="style.css">
+
+</head>
+<body>
+
+<header>
+  <h1>GAME OF TAGS</h1>
+  <p class="tagline">RL-powered arena &nbsp;·&nbsp; onnxruntime-web</p>
+</header>
+
+<div class="hud" aria-label="Game HUD">
+  <div class="hud-cell">
+    <span class="hud-label">Your Score</span>
+    <span class="hud-value c-player" id="hud-pscore">0</span>
+  </div>
+  <div class="hud-cell">
+    <span class="hud-label">Time</span>
+    <span class="hud-value c-time" id="hud-time">90</span>
+  </div>
+  <div class="hud-cell">
+    <span class="hud-label">IT</span>
+    <span class="hud-value c-it" id="hud-it">YOU</span>
+  </div>
+  <div class="hud-cell">
+    <span class="hud-label">AI Score</span>
+    <span class="hud-value c-ai" id="hud-ascore">0</span>
+  </div>
+</div>
+
+<div class="arena-wrap">
+  <canvas id="game-canvas"></canvas>
+
+  <div class="tag-flash" id="tag-flash"></div>
+
+  <div class="overlay show" id="overlay">
+    <div class="overlay-title" id="ov-title" style="color:var(--bright)">GAME OF TAGS</div>
+    <div class="overlay-sub"   id="ov-sub">Initialising AI…</div>
+    <div class="overlay-score" id="ov-score" style="display:none">
+      <div class="overlay-score-item">
+        <span class="overlay-score-label">You</span>
+        <span class="overlay-score-val" id="ov-pscore" style="color:var(--player)">0</span>
+      </div>
+      <div class="overlay-score-item">
+        <span class="overlay-score-label">AI</span>
+        <span class="overlay-score-val" id="ov-ascore" style="color:var(--ai)">0</span>
+      </div>
+    </div>
+    <button class="btn btn-primary" id="ov-btn" style="display:none" onclick="handleOverlayBtn()">
+      ▶ START
+    </button>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="btn btn-primary" onclick="handleRestart()">↺ RESTART</button>
+  <button class="btn btn-ghost"   onclick="handleToggleDeterministic()" id="btn-det">
+    Mode: DETERMINISTIC
+  </button>
+</div>
+
+<div class="status-bar">
+  <span>
+    <span class="status-dot" id="status-dot"></span>
+    <span id="status-text">loading…</span>
+  </span>
+  <span id="status-inference">inference: —</span>
+</div>
+
+<div class="legend">
+  <span><span class="legend-dot" style="background:var(--player)"></span>You</span>
+  <span><span class="legend-dot" style="background:var(--ai)"></span>AI</span>
+  <span><span class="legend-dot" style="background:var(--it); border-radius:0"></span>IT (chaser)</span>
+  <span><span class="legend-dot" style="background:#1c2040; border:1px solid #2a2d50"></span>Wall</span>
+</div>
+
+<div class="dpad">
+  <div></div>
+  <button class="dpad-btn"
+    ontouchstart="pressKey('ArrowUp')"   ontouchend="releaseKey('ArrowUp')"
+    onmousedown="pressKey('ArrowUp')"    onmouseup="releaseKey('ArrowUp')">▲</button>
+  <div></div>
+  <button class="dpad-btn"
+    ontouchstart="pressKey('ArrowLeft')" ontouchend="releaseKey('ArrowLeft')"
+    onmousedown="pressKey('ArrowLeft')"  onmouseup="releaseKey('ArrowLeft')">◀</button>
+  <div class="dpad-center"></div>
+  <button class="dpad-btn"
+    ontouchstart="pressKey('ArrowRight')" ontouchend="releaseKey('ArrowRight')"
+    onmousedown="pressKey('ArrowRight')"  onmouseup="releaseKey('ArrowRight')">▶</button>
+  <div></div>
+  <button class="dpad-btn"
+    ontouchstart="pressKey('ArrowDown')" ontouchend="releaseKey('ArrowDown')"
+    onmousedown="pressKey('ArrowDown')"  onmouseup="releaseKey('ArrowDown')">▼</button>
+  <div></div>
+</div>
+
+<script type="module">
+import { init, startGame, endGame, Events, pressKey, releaseKey } from './game.js';
+
+window.pressKey   = pressKey;
+window.releaseKey = releaseKey;
+
+let deterministicMode = true;
+
+Events.addEventListener('loading', e => {
+  const { message, ready, usingOnnx } = e.detail;
+  document.getElementById('ov-sub').textContent = message;
+
+  if (ready) {
+    const dot = document.getElementById('status-dot');
+    const txt = document.getElementById('status-text');
+
+    if (usingOnnx) {
+      dot.classList.add('on');
+      txt.textContent = 'ONNX model active';
+    } else {
+      dot.classList.add('err');
+      txt.textContent = 'Fallback agent (no model)';
+    }
+
+    document.getElementById('ov-title').textContent = 'GAME OF TAGS';
+    document.getElementById('ov-sub').textContent   = 'Catch the AI • WASD / Arrow keys';
+    document.getElementById('ov-btn').style.display = 'inline-block';
+  }
+});
+
+Events.addEventListener('start', () => {
+  document.getElementById('overlay').classList.remove('show');
+  document.getElementById('ov-score').style.display = 'none';
+});
+
+Events.addEventListener('score', e => {
+  const { player, ai } = e.detail;
+  document.getElementById('hud-pscore').textContent = player;
+  document.getElementById('hud-ascore').textContent = ai;
+
+  pulse('hud-pscore');
+  pulse('hud-ascore');
+});
+
+Events.addEventListener('tagged', e => {
+  const byPlayer = e.detail.by === 'player';
+  flashScreen(byPlayer ? 'rgba(0,245,196,0.18)' : 'rgba(255,45,111,0.18)');
+});
+
+Events.addEventListener('roleChange', e => {
+  const el = document.getElementById('hud-it');
+  el.textContent = e.detail.itIsPlayer ? 'YOU' : 'AI';
+  el.style.color = e.detail.itIsPlayer ? 'var(--player)' : 'var(--ai)';
+  el.classList.remove('role-anim');
+  void el.offsetWidth;
+  el.classList.add('role-anim');
+});
+
+Events.addEventListener('tick', e => {
+  const el = document.getElementById('hud-time');
+  el.textContent = e.detail.timeLeft;
+  el.classList.toggle('danger', e.detail.timeLeft <= 10);
+});
+
+Events.addEventListener('gameover', e => {
+  const { playerScore, aiScore, winner, avgInferenceMs } = e.detail;
+
+  document.getElementById('ov-pscore').textContent = playerScore;
+  document.getElementById('ov-ascore').textContent = aiScore;
+  document.getElementById('ov-score').style.display = 'flex';
+
+  const titleEl = document.getElementById('ov-title');
+  if (winner === 'player') {
+    titleEl.textContent  = 'YOU WIN!';
+    titleEl.style.color  = 'var(--player)';
+    titleEl.style.textShadow = 'var(--glow-p)';
+  } else if (winner === 'ai') {
+    titleEl.textContent  = 'AI WINS!';
+    titleEl.style.color  = 'var(--ai)';
+    titleEl.style.textShadow = 'var(--glow-a)';
+  } else {
+    titleEl.textContent  = 'DRAW';
+    titleEl.style.color  = 'var(--bright)';
+  }
+
+  document.getElementById('ov-sub').textContent = `Inference avg: ${avgInferenceMs}ms`;
+  document.getElementById('ov-btn').textContent = '↺ PLAY AGAIN';
+  document.getElementById('ov-btn').style.display = 'inline-block';
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('status-inference').textContent = `inference: ${avgInferenceMs}ms avg`;
+});
+
+window.handleOverlayBtn = () => { startGame(); };
+window.handleRestart    = () => { startGame(); };
+window.handleToggleDeterministic = () => {
+  deterministicMode = !deterministicMode;
+  document.getElementById('btn-det').textContent =
+    `Mode: ${deterministicMode ? 'DETERMINISTIC' : 'STOCHASTIC'}`;
+};
+
+function flashScreen(color) {
+  const f = document.getElementById('tag-flash');
+  f.style.background = color;
+  f.style.opacity    = '1';
+  setTimeout(() => { f.style.opacity = '0'; }, 180);
+}
+
+function pulse(id) {
+  const el = document.getElementById(id);
+  el.classList.remove('glow');
+  void el.offsetWidth;
+  el.classList.add('glow');
+  setTimeout(() => el.classList.remove('glow'), 600);
+}
+
+init();
+</script>
+</body>
+</html>
