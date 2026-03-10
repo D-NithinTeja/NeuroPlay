@@ -30,7 +30,7 @@ game-of-tags/
 ### 1. Install Python dependencies
 
 ```bash
-pip install stable-baselines3[extra] gymnasium torch onnx onnxruntime
+uv add stable-baselines3[extra] gymnasium torch onnx onnxruntime
 ```
 
 ### 2. Train the agent
