@@ -52,7 +52,7 @@ PPO_HYPERPARAMS = dict(
 )
 
 N_ENVS           = 8        
-TOTAL_TIMESTEPS  = 1_500_000
+TOTAL_TIMESTEPS  = 5_000_000
 EVAL_FREQ        = 20_000   
 EVAL_EPISODES    = 20
 CHECKPOINT_FREQ  = 100_000
@@ -252,7 +252,6 @@ def evaluate(model_path: str = FINAL_MODEL_PATH, n_episodes: int = 20):
         env.close()
 
 
-# ─── CLI ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train / evaluate the Tag runner agent")
     parser.add_argument("--timesteps", type=int,   default=TOTAL_TIMESTEPS,

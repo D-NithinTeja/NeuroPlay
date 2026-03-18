@@ -180,7 +180,6 @@ def _verify_onnx(onnx_path: str, original_policy, norm_stats: dict | None):
         print("  ⚠ Verification WARNING — outputs diverge slightly")
         print("    This may be acceptable; check opset compatibility.")
 
-    # Test greedy action consistency
     print("\n  Action consistency check (10 obs):")
     for i in range(10):
         obs = np.random.randn(1, OBS_DIM).astype(np.float32)
