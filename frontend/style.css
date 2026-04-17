@@ -1,15 +1,15 @@
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=DM+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg:        #07080f;
-  --surface:   #0d0f1c;
-  --border:    #1a1d35;
+  --bg:        #000000;
+  --surface:   #02030a;
+  --border:    #090d1d;
   --player:    #00f5c4;
   --ai:        #ff2d6f;
   --it:        #ffd600;
-  --text:      #8892b0;
-  --bright:    #cdd6f4;
-  --dim:       #3d4266;
+  --text:      #667296;
+  --bright:    #c8d0eb;
+  --dim:       #262d49;
 
   --glow-p:    0 0 20px rgba(0,245,196,0.4);
   --glow-a:    0 0 20px rgba(255,45,111,0.4);
@@ -41,8 +41,32 @@ body::before {
   content: '';
   position: fixed; inset: 0; pointer-events: none;
   background:
-    radial-gradient(ellipse 60% 40% at 15% 10%,  rgba(0,245,196,0.04) 0%, transparent 70%),
-    radial-gradient(ellipse 55% 35% at 85% 90%,  rgba(255,45,111,0.04) 0%, transparent 70%);
+    radial-gradient(ellipse 70% 50% at 10% 6%, rgba(0,245,196,0.02) 0%, transparent 72%),
+    radial-gradient(ellipse 65% 45% at 90% 94%, rgba(255,45,111,0.02) 0%, transparent 72%),
+    repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,0.01) 0px,
+      rgba(255,255,255,0.01) 1px,
+      transparent 1px,
+      transparent 4px
+    );
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 50%, transparent 0%, rgba(0,0,0,0.55) 72%, rgba(0,0,0,0.85) 100%),
+    repeating-linear-gradient(
+      135deg,
+      rgba(255,255,255,0.008) 0px,
+      rgba(255,255,255,0.008) 2px,
+      transparent 2px,
+      transparent 10px
+    );
+  mix-blend-mode: normal;
 }
 
 header {
@@ -126,10 +150,54 @@ h1 {
   width: var(--canvas-w);
   height: var(--canvas-h);
   border: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.012) 0%, rgba(255,255,255,0.0) 100%),
+    #010209;
   box-shadow:
-    0 0 0 1px rgba(255,255,255,0.03),
-    0 8px 60px rgba(0,0,0,0.6);
+    0 0 0 1px rgba(255,255,255,0.02),
+    0 14px 90px rgba(0,0,0,0.9);
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+#game-canvas,
+.tag-flash,
+.overlay {
+  position: relative;
+  z-index: 1;
+}
+
+.arena-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255,255,255,0.01) 0px,
+      rgba(255,255,255,0.01) 1px,
+      transparent 1px,
+      transparent 6px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgba(0,0,0,0.11) 0px,
+      rgba(0,0,0,0.11) 2px,
+      transparent 2px,
+      transparent 8px
+    );
+  opacity: 0.7;
+  z-index: 0;
+}
+
+.arena-wrap::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at center, transparent 50%, rgba(0,0,0,0.68) 100%);
+  z-index: 0;
 }
 
 #game-canvas { display: block; }
@@ -138,7 +206,7 @@ h1 {
   position: absolute; inset: 0;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
-  background: rgba(7,8,15,0.88);
+  background: rgba(2,3,9,0.94);
   backdrop-filter: blur(6px);
   opacity: 0;
   pointer-events: none;

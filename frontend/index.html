@@ -64,6 +64,9 @@
   <button class="btn btn-ghost"   onclick="handleToggleDeterministic()" id="btn-det">
     Mode: DETERMINISTIC
   </button>
+  <button class="btn btn-ghost"   onclick="handleToggleVisibility()" id="btn-view">
+    View: FULL GRID
+  </button>
 </div>
 
 <div class="status-bar">
@@ -102,7 +105,18 @@
 </div>
 
 <script type="module">
-import { init, startGame, endGame, Events, pressKey, releaseKey } from './game.js';
+import {
+  init,
+  startGame,
+  endGame,
+  Events,
+  pressKey,
+  releaseKey,
+  toggleVisibilityMode,
+  getVisibilityMode,
+  setDeterministicMode,
+  getDeterministicMode,
+} from './game.js';
 
 window.pressKey   = pressKey;
 window.releaseKey = releaseKey;
@@ -165,6 +179,14 @@ Events.addEventListener('tick', e => {
   el.classList.toggle('danger', e.detail.timeLeft <= 10);
 });
 
+Events.addEventListener('visibilityChange', e => {
+  updateVisibilityButton(e.detail.mode);
+});
+
+Events.addEventListener('deterministicChange', e => {
+  updateDeterministicButton(e.detail.deterministic);
+});
+
 Events.addEventListener('gameover', e => {
   const { playerScore, aiScore, winner, avgInferenceMs } = e.detail;
 
@@ -197,9 +219,26 @@ window.handleOverlayBtn = () => { startGame(); };
 window.handleRestart    = () => { startGame(); };
 window.handleToggleDeterministic = () => {
   deterministicMode = !deterministicMode;
+  setDeterministicMode(deterministicMode);
+  updateDeterministicButton(deterministicMode);
+};
+
+window.handleToggleVisibility = () => {
+  const mode = toggleVisibilityMode();
+  updateVisibilityButton(mode);
+};
+
+function updateVisibilityButton(mode = getVisibilityMode()) {
+  const isPartial = mode === 'partial';
+  document.getElementById('btn-view').textContent =
+    `View: ${isPartial ? 'NEIGHBORHOOD' : 'FULL GRID'}`;
+}
+
+function updateDeterministicButton(mode = getDeterministicMode()) {
+  deterministicMode = mode;
   document.getElementById('btn-det').textContent =
     `Mode: ${deterministicMode ? 'DETERMINISTIC' : 'STOCHASTIC'}`;
-};
+}
 
 function flashScreen(color) {
   const f = document.getElementById('tag-flash');
@@ -217,6 +256,9 @@ function pulse(id) {
 }
 
 init();
+setDeterministicMode(deterministicMode);
+updateDeterministicButton();
+updateVisibilityButton();
 </script>
 </body>
 </html>

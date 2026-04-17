@@ -1,195 +1,194 @@
-# 🏃 Game of Tags
+# Neuroplay
 
-A browser-based tag game where the AI opponent is a real RL agent — trained with **Stable Baselines3 / PPO**, exported via **ONNX**, and run in-browser via **onnxruntime-web (WASM)**.
+Neuroplay is a browser-based tag game where both runner and chaser behaviors can be learned with PPO, exported to ONNX, and executed in-browser with onnxruntime-web.
 
----
+## Project Layout
 
-## File Structure
-
+```text
+Neuroplay/
+├── frontend/                     ← Browser game client (UI + gameplay loop)
+│   ├── index.html               ← HUD, controls, and app wiring
+│   ├── game.js                  ← Game state machine, movement, role switching, rendering
+│   ├── agent.js                 ← ONNX runtime loader/inference and fallback logic
+│   └── style.css                ← Visual theme and responsive layout styles
+├── training/                     ← RL training and model export pipeline
+│   ├── env.py                   ← Gymnasium environment, observations, and reward shaping
+│   ├── train.py                 ← PPO training/evaluation entrypoint (runner/chaser roles)
+│   ├── export_onnx.py           ← SB3 checkpoint to ONNX exporter (+ norm stats)
+│   └── playtest_loops.py        ← Loop/oscillation diagnostics for trained behavior
+├── model/                        ← Frontend-consumed ONNX artifacts
+│   ├── tag_agent.onnx           ← Runner policy model used when AI is evader
+│   ├── norm_stats.json          ← Runner observation normalization stats
+│   ├── tag_chaser.onnx          ← Chaser policy model used when AI is IT/chaser
+│   └── norm_stats_chaser.json   ← Chaser observation normalization stats
+├── pyproject.toml                ← Project metadata, dependencies, and uv indexes/sources
+└── README.md                     ← Usage, training/export guide, and design notes
 ```
-game-of-tags/
-├── frontend/
-│   ├── index.html          ← game UI + event wiring
-│   ├── game.js             ← game loop, rendering, tag logic
-│   └── agent.js            ← ONNX Runtime Web inference
-│
-├── training/
-│   ├── env.py              ← Custom Gymnasium environment
-│   ├── train.py            ← PPO training (Stable Baselines3)
-│   └── export_onnx.py      ← Export .zip → .onnx + norm_stats.json
-│
-└── model/
-    ├── tag_agent.onnx      ← exported model (created by export step)
-    └── norm_stats.json     ← VecNormalize stats (created by export step)
-```
 
----
+## Setup (uv)
 
-## Quick Start
-
-### 1. Install Python dependencies
+From repository root:
 
 ```bash
-uv add stable-baselines3[extra] gymnasium torch onnx onnxruntime
+uv sync
 ```
 
-### 2. Train the agent
+If you need to add missing packages:
 
 ```bash
-cd training
-
-# Full training run (~1.5M steps, ~10-20 min on CPU / ~3-5 min on GPU)
-python train.py
-
-# Quick smoke-test run (fewer steps, weaker agent)
-python train.py --timesteps 300000
-
-# Resume from checkpoint
-python train.py --resume
-
-# Train + evaluate afterwards
-python train.py --eval
+uv add stable-baselines3[extra] gymnasium torch onnx onnxruntime tensorboard
 ```
 
-Training outputs:
-```
-training/models/best_model/best_model.zip   ← best checkpoint (use this)
-training/models/tag_agent_final.zip         ← final weights
-training/models/vecnormalize.pkl            ← normalizer stats
-training/logs/                              ← TensorBoard logs
-```
+## Training
 
-Monitor training with TensorBoard:
-```bash
-tensorboard --logdir training/logs
-```
+Training supports two roles:
 
-### 3. Export to ONNX
+- runner: policy learns to evade.
+- chaser: policy learns to tag.
 
-```bash
-cd training
+### Reward shaping
 
-# Export best model (recommended)
-python export_onnx.py
+These tables mirror the current implementation in `training/env.py` and are intended to be easy to extend.
 
-# Export + verify outputs match PyTorch
-python export_onnx.py --verify
+Runner role (`--role runner`)
 
-# Custom paths
-python export_onnx.py \
-  --model  models/best_model/best_model.zip \
-  --output ../model/tag_agent.onnx \
-  --vecnorm models/vecnormalize.pkl
-```
+| Condition | Reward Formula | Intent |
+|---|---|---|
+| Every step | `+0.05` | Encourage survival over time |
+| Distance change | `+(dist_t - dist_{t-1}) * 0.3` | Reward increasing separation from chaser |
+| Distance threshold | `+0.2 if dist > 10 else +0.1 if dist > 6` | Favor staying in safer spacing zones |
+| Hit wall | `-0.1` | Discourage invalid/tight movement |
+| Danger zone | `-0.4 if dist <= 3` | Penalize getting too close |
+| Critical danger | `-0.8 if dist <= 2` | Strongly penalize near-capture states |
+| Oscillation detected | `-0.15` | Reduce 2-cycle loop behavior |
+| Tagged (terminal) | `-20.0` | Strong failure signal |
+| Episode timeout without tag | `+5.0` | Reward full-episode survival |
 
-This creates:
-```
-model/tag_agent.onnx       ← neural net (input: [1,11] → output: [1,4] logits)
-model/norm_stats.json      ← obs normalization params for the browser
-```
+Chaser role (`--role chaser`)
 
-### 4. Serve the frontend
+| Condition | Reward Formula | Intent |
+|---|---|---|
+| Every step | `-0.02` | Add urgency; discourage stalling |
+| Distance change | `+(dist_{t-1} - dist_t) * 0.5` | Reward closing distance to target |
+| In range | `+0.1 if dist <= 6` | Encourage sustained pressure |
+| Close range | `+0.2 if dist <= 3` | Encourage finishing approach |
+| Hit wall | `-0.1` | Discourage poor pathing |
+| Oscillation detected | `-0.1` | Reduce looping in obstacle pockets |
+| Tagged target (terminal) | `+20.0` | Strong success signal |
+| Episode timeout without tag | `-5.0` | Penalize failure to finish |
 
-The game uses ES modules, so it **must be served** (not opened as file://):
+Notes for contributors
+
+- Keep formulas in this section synchronized with `TagEnv.step()` in `training/env.py`.
+- Prefer adding new terms as new rows instead of overloading existing rows.
+- If a term is role-specific, add it only to the relevant table.
+- When changing reward weights, update both code and this table in the same PR/commit.
+
+### Train runner policy
 
 ```bash
-# Python
-cd game-of-tags
-python -m http.server 8080
-
-# Node
-npx serve .
-
-# VS Code: use Live Server extension
+uv run python training/train.py --role runner --timesteps 300000 --device cuda
 ```
 
-Open: http://localhost:8080/frontend/
+### Train chaser policy
 
----
-
-## How It Works
-
-### Observation Space (11 floats)
-
-| Index | Feature             | Range     |
-|-------|---------------------|-----------|
-| 0     | agent_x (norm)      | [0, 1]    |
-| 1     | agent_y (norm)      | [0, 1]    |
-| 2     | player_x (norm)     | [0, 1]    |
-| 3     | player_y (norm)     | [0, 1]    |
-| 4     | rel_dx              | [-1, 1]   |
-| 5     | rel_dy              | [-1, 1]   |
-| 6     | manhattan dist      | [0, 1]    |
-| 7–10  | obstacle flags UDLR | {0, 1}    |
-
-### Action Space
-
-`Discrete(4)` → Up / Down / Left / Right
-
-### Reward Shaping
-
-| Event                  | Reward        |
-|------------------------|---------------|
-| Survival per step      | +0.05         |
-| Distance increased     | +delta × 0.3  |
-| Distance > 10 tiles    | +0.2          |
-| Distance > 6 tiles     | +0.1          |
-| Hit wall               | −0.1          |
-| Distance ≤ 3           | −0.4          |
-| Distance ≤ 2           | −0.8          |
-| Tagged (terminal)      | −20.0         |
-| Survived full episode  | +5.0          |
-
-### ONNX Export
-
-```
-SB3 PPO .zip
-  └─ policy.mlp_extractor  (pi branch, 128×128 Tanh)
-  └─ policy.action_net     (128 → 4)
-       ↓ torch.onnx.export (opset 17, dynamic batch)
-model/tag_agent.onnx       (input: obs[B,11] → logits[B,4])
+```bash
+uv run python training/train.py --role chaser --timesteps 300000 --device cuda
 ```
 
-VecNormalize stats are extracted separately and applied in `agent.js` before inference.
+### Useful flags
 
-### In-Browser Inference (agent.js)
-
-```
-buildObs(aiPos, playerPos)   →  Float32Array[11]
-ObsNormalizer.normalize()    →  Float32Array[11]  (clip((x-mean)/std, ±10))
-ort.InferenceSession.run()   →  Float32Array[4]   (logits)
-argmax()                     →  action index 0–3
+```bash
+uv run python training/train.py --role runner --resume
+uv run python training/train.py --role chaser --eval
+uv run python training/train.py --role runner --eval-only
 ```
 
----
+### Role-specific outputs
 
-## Gameplay
+Runner:
 
-- **You start as IT** (cyan, dashed ring) — chase and tag the AI
-- On tag, **roles flip** — now the AI hunts you
-- 90-second rounds, score tracked for both
-- WASD or Arrow Keys to move
+- training/models/best_model/best_model.zip
+- training/models/tag_agent_final.zip
+- training/models/vecnormalize.pkl
 
-### When AI is Runner (default)
-The trained ONNX model drives the AI — it actively evades you using learned policy.
+Chaser:
 
-### When AI is IT (chaser)
-A greedy heuristic chases the player (moves to minimise Manhattan distance).
-You can extend this by training a second "chaser" policy and exporting it separately.
+- training/models/best_model_chaser/best_model.zip
+- training/models/tag_chaser_final.zip
+- training/models/vecnormalize_chaser.pkl
 
----
+## Export to ONNX
 
-## Extending
+### Export runner ONNX
 
-**Train a dedicated chaser policy:**
-Set `is_IT=True` in `TagEnv` and invert the reward (reward closeness instead of distance).
-Export as `tag_chaser.onnx` and load it in `agent.js` when `!state.itIsPlayer`.
+```bash
+uv run python training/export_onnx.py --role runner --verify
+```
 
-**Harder AI:**
-- Reduce `chaser_noise` in `train.py` toward 0 for a more relentless simulated chaser
-- Increase `TOTAL_TIMESTEPS` to 3–5M for a stronger policy
-- Tune `net_arch` to `[256, 256]` for more capacity
+Creates:
 
-**Stochastic play:**
-Toggle "Mode: STOCHASTIC" in the UI to sample from the softmax distribution
-instead of taking argmax — makes the AI less predictable.
+- model/tag_agent.onnx
+- model/norm_stats.json
+
+### Export chaser ONNX
+
+```bash
+uv run python training/export_onnx.py --role chaser --verify
+```
+
+Creates:
+
+- model/tag_chaser.onnx
+- model/norm_stats_chaser.json
+
+### Custom export paths
+
+```bash
+uv run python training/export_onnx.py \
+  --role chaser \
+  --model training/models/best_model_chaser/best_model.zip \
+  --vecnorm training/models/vecnormalize_chaser.pkl \
+  --output model/tag_chaser.onnx \
+  --norm-output model/norm_stats_chaser.json \
+  --verify
+```
+
+## Run Frontend
+
+The app uses ES modules, so serve over HTTP from repository root:
+
+```bash
+uv run python -m http.server 8080
+```
+
+Open:
+
+- http://localhost:8080/frontend/
+
+## Runtime Behavior
+
+- When AI is runner, frontend uses model/tag_agent.onnx.
+- When AI is chaser, frontend tries model/tag_chaser.onnx.
+- If chaser ONNX is missing, frontend falls back to heuristic/BFS chase logic.
+
+## Evaluation and Playtests
+
+Evaluate a trained role policy:
+
+```bash
+uv run python training/train.py --role runner --eval-only
+uv run python training/train.py --role chaser --eval-only
+```
+
+Loop and oscillation playtest:
+
+```bash
+uv run python training/playtest_loops.py --episodes 30
+```
+
+TensorBoard:
+
+```bash
+uv run tensorboard --logdir training/logs
+```

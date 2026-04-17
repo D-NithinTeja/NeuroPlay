@@ -3,12 +3,26 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
+from pathlib import Path
 
-DEFAULT_MODEL_PATH  = os.path.join("models", "best_model", "best_model.zip")
-DEFAULT_VECNORM     = os.path.join("models", "vecnormalize.pkl")
-DEFAULT_OUTPUT_DIR  = os.path.join("..", "model")
-DEFAULT_OUTPUT_PATH = os.path.join(DEFAULT_OUTPUT_DIR, "tag_agent.onnx")
-NORM_STATS_PATH     = os.path.join(DEFAULT_OUTPUT_DIR, "norm_stats.json")
+SCRIPT_DIR          = Path(__file__).resolve().parent
+PROJECT_ROOT        = SCRIPT_DIR.parent
+DEFAULT_OUTPUT_DIR  = PROJECT_ROOT / "model"
+
+ROLE_EXPORT_DEFAULTS = {
+    "runner": {
+        "model_path": SCRIPT_DIR / "models" / "best_model" / "best_model.zip",
+        "vecnorm_path": SCRIPT_DIR / "models" / "vecnormalize.pkl",
+        "output_path": DEFAULT_OUTPUT_DIR / "tag_agent.onnx",
+        "norm_output_path": DEFAULT_OUTPUT_DIR / "norm_stats.json",
+    },
+    "chaser": {
+        "model_path": SCRIPT_DIR / "models" / "best_model_chaser" / "best_model.zip",
+        "vecnorm_path": SCRIPT_DIR / "models" / "vecnormalize_chaser.pkl",
+        "output_path": DEFAULT_OUTPUT_DIR / "tag_chaser.onnx",
+        "norm_output_path": DEFAULT_OUTPUT_DIR / "norm_stats_chaser.json",
+    },
+}
 
 OBS_DIM = 11
 
@@ -54,12 +68,18 @@ def extract_norm_stats(vecnorm_path: str) -> dict | None:
         return None
 
 
-def export(model_path: str, output_path: str, vecnorm_path: str, verify: bool):
+def export(model_path: str, output_path: str, vecnorm_path: str, norm_output_path: str, verify: bool):
+    model_path = str(model_path)
+    output_path = str(output_path)
+    vecnorm_path = str(vecnorm_path)
+    norm_output_path = str(norm_output_path)
+
     print("\n" + "═"*60)
     print("  GAME OF TAGS — ONNX EXPORT")
     print("═"*60)
     print(f"  Source model : {model_path}")
     print(f"  Output path  : {output_path}")
+    print(f"  Norm path    : {norm_output_path}")
     print(f"  VecNormalize : {vecnorm_path}")
     print("═"*60 + "\n")
 
@@ -119,10 +139,10 @@ def export(model_path: str, output_path: str, vecnorm_path: str, verify: bool):
     stats = extract_norm_stats(vecnorm_path)
     if stats:
         import json
-        os.makedirs(os.path.dirname(NORM_STATS_PATH) or ".", exist_ok=True)
-        with open(NORM_STATS_PATH, "w") as f:
+        os.makedirs(os.path.dirname(norm_output_path) or ".", exist_ok=True)
+        with open(norm_output_path, "w") as f:
             json.dump(stats, f, indent=2)
-        print(f"  ✓ Norm stats saved → {NORM_STATS_PATH}")
+        print(f"  ✓ Norm stats saved → {norm_output_path}")
     else:
         print("  [info] No norm stats saved — browser will use raw observations.")
         print("         This is fine if VecNormalize was not used during training.")
@@ -199,16 +219,25 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Export SB3 PPO model to ONNX")
 
     parser.add_argument(
-        "--model", type=str, default=DEFAULT_MODEL_PATH,
-        help=f"Path to SB3 .zip model (default: {DEFAULT_MODEL_PATH})"
+        "--role", type=str, choices=["runner", "chaser"], default="runner",
+        help="Role defaults to use for model/vecnorm/output paths"
+    )
+
+    parser.add_argument(
+        "--model", type=str, default=None,
+        help="Path to SB3 .zip model (default depends on --role)"
     )
     parser.add_argument(
-        "--output", type=str, default=DEFAULT_OUTPUT_PATH,
-        help=f"Output .onnx path (default: {DEFAULT_OUTPUT_PATH})"
+        "--output", type=str, default=None,
+        help="Output .onnx path (default depends on --role)"
     )
     parser.add_argument(
-        "--vecnorm", type=str, default=DEFAULT_VECNORM,
-        help=f"Path to VecNormalize .pkl (default: {DEFAULT_VECNORM})"
+        "--vecnorm", type=str, default=None,
+        help="Path to VecNormalize .pkl (default depends on --role)"
+    )
+    parser.add_argument(
+        "--norm-output", type=str, default=None,
+        help="Path to save normalization stats JSON (default depends on --role)"
     )
     parser.add_argument(
         "--verify", action="store_true",
@@ -217,9 +246,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    defaults = ROLE_EXPORT_DEFAULTS[args.role]
+    model_path = args.model or str(defaults["model_path"])
+    output_path = args.output or str(defaults["output_path"])
+    vecnorm_path = args.vecnorm or str(defaults["vecnorm_path"])
+    norm_output_path = args.norm_output or str(defaults["norm_output_path"])
+
     export(
-        model_path  = args.model,
-        output_path = args.output,
-        vecnorm_path= args.vecnorm,
+        model_path  = model_path,
+        output_path = output_path,
+        vecnorm_path= vecnorm_path,
+        norm_output_path= norm_output_path,
         verify      = args.verify,
     )
