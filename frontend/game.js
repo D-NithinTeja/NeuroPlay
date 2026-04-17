@@ -12,25 +12,55 @@ import {
 
 const canvas = document.getElementById('game-canvas');
 const ctx    = canvas.getContext('2d');
-const CELL   = 20;
+ctx.imageSmoothingEnabled = false;
+const CELL   = 24;
 canvas.width  = COLS * CELL;
 canvas.height = ROWS * CELL;
 
-const PLAYER_MOVE_MS = 110;
+const USER_SPRITE_PATH = './assets/user.png';
+const AI_SPRITE_PATH   = './assets/AI.png';
+const CHARACTER_SCALE  = 1.34;
+
+let characterSprites = {
+  player: null,
+  ai: null,
+};
+
+const DEFAULT_PLAYER_MOVE_MS = 110;
+const MIN_PLAYER_MOVE_MS = 60;
+const MAX_PLAYER_MOVE_MS = 260;
+const PLAYER_SPEED_STEP_MS = 10;
 const AI_MOVE_MS     = 170;
 const ROUND_SECS     = 90;
 const TAG_DISTANCE   = 1;   
 const FORCE_BFS_CHASER = new URLSearchParams(window.location.search).get('chaser') === 'bfs';
-const PARTIAL_VIEW_NEIGHBORHOOD_CELLS = 3; // Reveals a 7x7 local grid around the player.
+const PARTIAL_VIEW_NEIGHBORHOOD_CELLS = 4; // Radial brightness radius in partial view.
 
 const VIEW_MODE = {
   FULL: 'full',
   PARTIAL: 'partial',
 };
 
+const TEXTURE_PRESET = {
+  CRYPT: 'crypt',
+  VOLCANIC: 'volcanic',
+  SANDSTONE: 'sandstone',
+};
+
+const TEXTURE_PRESET_ORDER = [
+  TEXTURE_PRESET.CRYPT,
+  TEXTURE_PRESET.VOLCANIC,
+  TEXTURE_PRESET.SANDSTONE,
+];
+
 let visibilityMode = new URLSearchParams(window.location.search).get('view') === VIEW_MODE.PARTIAL
   ? VIEW_MODE.PARTIAL
   : VIEW_MODE.FULL;
+
+let texturePreset = (() => {
+  const q = new URLSearchParams(window.location.search).get('texture');
+  return TEXTURE_PRESET_ORDER.includes(q) ? q : TEXTURE_PRESET.CRYPT;
+})();
 
 let deterministicMode = true;
 
@@ -61,6 +91,7 @@ let chaseCommitTicks = 0;
 let lastChaseAction = null;
 let chaseDirectionLock = null;
 let chaseDirectionLockTicks = 0;
+let playerMoveMs = DEFAULT_PLAYER_MOVE_MS;
 
 export const Events = new EventTarget();
 
@@ -498,7 +529,7 @@ function onTag(ts) {
 async function loop(ts) {
   if (!state.running) return;
 
-  if (ts - lastPlayerMove >= PLAYER_MOVE_MS) {
+  if (ts - lastPlayerMove >= playerMoveMs) {
     const dir = getPlayerInput();
     if (dir) {
       tryMove(player, dir[0], dir[1]);
@@ -605,17 +636,26 @@ function chaserAction(aiPos, playerPos) {
 }
 
 const PALETTE = {
-  bg:          '#02030a',
-  gridLine:    '#080a14',
-  obstacle:    '#0d1124',
-  obstacleEdge:'#1a2144',
-  player:      '#00f5c4',
-  playerGlow:  'rgba(0,245,196,',
-  ai:          '#ff2d6f',
-  aiGlow:      'rgba(255,45,111,',
-  itRing:      '#ffd600',
-  trailPlayer: 'rgba(0,245,196,',
-  trailAi:     'rgba(255,45,111,',
+  void:        '#120d1c',
+  floorA:      '#8f8473',
+  floorB:      '#7d7364',
+  mossA:       '#737858',
+  mossB:       '#60684a',
+  dustA:       '#8e775f',
+  dustB:       '#7a634d',
+  grout:       '#4e463d',
+  moss:        '#5f7b43',
+  wall:        '#5c4c3f',
+  wallTop:     '#9b8a75',
+  wallEdge:    '#3a3028',
+  wallMortar:  'rgba(34, 28, 22, 0.55)',
+  player:      '#54ff7b',
+  playerGlow:  'rgba(84,255,123,',
+  ai:          '#c86cff',
+  aiGlow:      'rgba(200,108,255,',
+  itRing:      '#ffe2a3',
+  trailPlayer: 'rgba(84,255,123,',
+  trailAi:     'rgba(200,108,255,',
 };
 
 const _scanlines = document.createElement('canvas');
@@ -623,11 +663,333 @@ _scanlines.width  = COLS * CELL;
 _scanlines.height = ROWS * CELL;
 (function buildScanlines() {
   const c = _scanlines.getContext('2d');
-  for (let y = 0; y < _scanlines.height; y += 3) {
-    c.fillStyle = 'rgba(0,0,0,0.08)';
+  for (let y = 0; y < _scanlines.height; y += 2) {
+    c.fillStyle = 'rgba(24,18,13,0.035)';
     c.fillRect(0, y, _scanlines.width, 1);
   }
+  for (let y = 0; y < _scanlines.height; y += 8) {
+    for (let x = (y % 16) === 0 ? 2 : 6; x < _scanlines.width; x += 12) {
+      c.fillStyle = 'rgba(255, 235, 190, 0.03)';
+      c.fillRect(x, y, 1, 1);
+    }
+  }
 })();
+
+function tileNoise(x, y, seed = 0) {
+  // Deterministic per-cell pseudo-noise used for tile variation.
+  const n = (((x + 1) * 73856093) ^ ((y + 1) * 19349663) ^ (seed * 83492791)) >>> 0;
+  return (n % 1024) / 1023;
+}
+
+function isNearWhite(r, g, b, a) {
+  if (a <= 8) return false;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return max >= 220 && min >= 190 && (max - min) <= 35;
+}
+
+function makeWhiteBackgroundTransparent(canvas) {
+  const w = canvas.width;
+  const h = canvas.height;
+  const cctx = canvas.getContext('2d', { willReadFrequently: true });
+  const image = cctx.getImageData(0, 0, w, h);
+  const data = image.data;
+
+  const visited = new Uint8Array(w * h);
+  const queue = new Int32Array(w * h);
+  let head = 0;
+  let tail = 0;
+
+  function enqueueIfBg(x, y) {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    const idx = y * w + x;
+    if (visited[idx]) return;
+    const p = idx * 4;
+    if (!isNearWhite(data[p], data[p + 1], data[p + 2], data[p + 3])) return;
+    visited[idx] = 1;
+    queue[tail++] = idx;
+  }
+
+  for (let x = 0; x < w; x++) {
+    enqueueIfBg(x, 0);
+    enqueueIfBg(x, h - 1);
+  }
+  for (let y = 1; y < h - 1; y++) {
+    enqueueIfBg(0, y);
+    enqueueIfBg(w - 1, y);
+  }
+
+  while (head < tail) {
+    const idx = queue[head++];
+    const x = idx % w;
+    const y = Math.floor(idx / w);
+    const p = idx * 4;
+
+    // Remove only background-connected near-white pixels.
+    data[p + 3] = 0;
+
+    enqueueIfBg(x - 1, y);
+    enqueueIfBg(x + 1, y);
+    enqueueIfBg(x, y - 1);
+    enqueueIfBg(x, y + 1);
+  }
+
+  cctx.putImageData(image, 0, 0);
+}
+
+function getOpaqueBounds(canvas) {
+  const cctx = canvas.getContext('2d', { willReadFrequently: true });
+  const pixels = cctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+  let minX = canvas.width;
+  let minY = canvas.height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < canvas.height; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      const a = pixels[(y * canvas.width + x) * 4 + 3];
+      if (a <= 4) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    return { sx: 0, sy: 0, sw: canvas.width, sh: canvas.height };
+  }
+
+  return {
+    sx: minX,
+    sy: minY,
+    sw: maxX - minX + 1,
+    sh: maxY - minY + 1,
+  };
+}
+
+function loadSpriteAsset(path) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const source = document.createElement('canvas');
+      source.width = img.width;
+      source.height = img.height;
+      const sctx = source.getContext('2d', { willReadFrequently: true });
+      sctx.drawImage(img, 0, 0);
+
+      makeWhiteBackgroundTransparent(source);
+      const bounds = getOpaqueBounds(source);
+      resolve({ source, ...bounds });
+    };
+    img.onerror = () => {
+      console.warn(`[Sprites] Failed to load: ${path}`);
+      resolve(null);
+    };
+    img.src = path;
+  });
+}
+
+async function preloadCharacterSprites() {
+  const [playerSprite, aiSprite] = await Promise.all([
+    loadSpriteAsset(USER_SPRITE_PATH),
+    loadSpriteAsset(AI_SPRITE_PATH),
+  ]);
+
+  characterSprites = {
+    player: playerSprite,
+    ai: aiSprite,
+  };
+}
+
+function drawFloorTile(gx, gy) {
+  const x = gx * CELL;
+  const y = gy * CELL;
+
+  const preset = texturePreset;
+  const zone = tileNoise(Math.floor(gx / 4), Math.floor(gy / 4), 211);
+  let baseA;
+  let baseB;
+  let dustA;
+  let dustB;
+  let mossA;
+  let mossB;
+
+  if (preset === TEXTURE_PRESET.VOLCANIC) {
+    baseA = '#51484f';
+    baseB = '#453c43';
+    dustA = '#635452';
+    dustB = '#554745';
+    mossA = '#5b4f47';
+    mossB = '#4f443f';
+  } else if (preset === TEXTURE_PRESET.SANDSTONE) {
+    baseA = '#a69274';
+    baseB = '#937f64';
+    dustA = '#b49a78';
+    dustB = '#9e8667';
+    mossA = '#8f8867';
+    mossB = '#7a7458';
+  } else {
+    baseA = PALETTE.floorA;
+    baseB = PALETTE.floorB;
+    dustA = PALETTE.dustA;
+    dustB = PALETTE.dustB;
+    mossA = PALETTE.mossA;
+    mossB = PALETTE.mossB;
+  }
+
+  if (zone < 0.32) {
+    baseA = dustA;
+    baseB = dustB;
+  } else if (zone > 0.72) {
+    baseA = mossA;
+    baseB = mossB;
+  }
+
+  const n = tileNoise(gx, gy, 17);
+  const base = n > 0.47 ? baseA : baseB;
+  ctx.fillStyle = base;
+  ctx.fillRect(x, y, CELL, CELL);
+
+  // Cobble-like quarter shading pattern for a different floor texture profile.
+  if (((gx + gy) & 1) === 0) {
+    ctx.fillStyle = preset === TEXTURE_PRESET.VOLCANIC
+      ? 'rgba(255, 210, 180, 0.04)'
+      : (preset === TEXTURE_PRESET.SANDSTONE ? 'rgba(255, 243, 210, 0.09)' : 'rgba(255, 242, 212, 0.07)');
+    ctx.fillRect(x, y, CELL / 2, CELL / 2);
+    ctx.fillRect(x + CELL / 2, y + CELL / 2, CELL / 2, CELL / 2);
+  } else {
+    ctx.fillStyle = preset === TEXTURE_PRESET.VOLCANIC ? 'rgba(0, 0, 0, 0.12)' : 'rgba(0, 0, 0, 0.08)';
+    ctx.fillRect(x + CELL / 2, y, CELL / 2, CELL / 2);
+    ctx.fillRect(x, y + CELL / 2, CELL / 2, CELL / 2);
+  }
+
+  // Soft bevel for depth.
+  ctx.fillStyle = preset === TEXTURE_PRESET.VOLCANIC
+    ? 'rgba(255, 176, 118, 0.06)'
+    : (preset === TEXTURE_PRESET.SANDSTONE ? 'rgba(255, 228, 182, 0.10)' : 'rgba(255, 228, 182, 0.08)');
+  ctx.fillRect(x, y, CELL, 2);
+  ctx.fillStyle = preset === TEXTURE_PRESET.VOLCANIC ? 'rgba(0, 0, 0, 0.16)' : 'rgba(0, 0, 0, 0.12)';
+  ctx.fillRect(x, y + CELL - 2, CELL, 2);
+
+  ctx.strokeStyle = preset === TEXTURE_PRESET.VOLCANIC ? '#3f353d'
+    : (preset === TEXTURE_PRESET.SANDSTONE ? '#645746' : PALETTE.grout);
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+
+  const crack = tileNoise(gx, gy, 31);
+  const specks = tileNoise(gx, gy, 67);
+  if (crack > 0.78) {
+    ctx.strokeStyle = preset === TEXTURE_PRESET.VOLCANIC
+      ? 'rgba(56, 35, 33, 0.55)'
+      : (preset === TEXTURE_PRESET.SANDSTONE ? 'rgba(82, 67, 47, 0.46)' : 'rgba(52, 43, 34, 0.52)');
+    ctx.beginPath();
+    ctx.moveTo(x + 4, y + CELL - 5);
+    ctx.lineTo(x + 8, y + CELL - 10);
+    ctx.lineTo(x + 12, y + CELL - 8);
+    ctx.lineTo(x + CELL - 4, y + 4);
+    ctx.stroke();
+  }
+
+  if (specks > 0.52) {
+    if (preset === TEXTURE_PRESET.VOLCANIC) {
+      ctx.fillStyle = 'rgba(214, 114, 78, 0.34)';
+    } else if (preset === TEXTURE_PRESET.SANDSTONE) {
+      ctx.fillStyle = 'rgba(151, 134, 92, 0.36)';
+    } else {
+      ctx.fillStyle = zone > 0.72 ? 'rgba(95, 123, 67, 0.62)' : 'rgba(40, 33, 27, 0.34)';
+    }
+    ctx.fillRect(x + 3, y + 6, 1, 1);
+    ctx.fillRect(x + 8, y + 4, 1, 1);
+    ctx.fillRect(x + 13, y + 11, 1, 1);
+    ctx.fillRect(x + 6, y + 13, 1, 1);
+  }
+}
+
+function drawWallTile(gx, gy) {
+  const x = gx * CELL;
+  const y = gy * CELL;
+  const preset = texturePreset;
+  const northBlocked = isBlocked(gx, gy - 1);
+  const southBlocked = isBlocked(gx, gy + 1);
+  const westBlocked = isBlocked(gx - 1, gy);
+  const eastBlocked = isBlocked(gx + 1, gy);
+
+  const wallBase = preset === TEXTURE_PRESET.VOLCANIC ? '#4e3d3e'
+    : (preset === TEXTURE_PRESET.SANDSTONE ? '#876c51' : PALETTE.wall);
+  const wallTop = preset === TEXTURE_PRESET.VOLCANIC ? '#7a5f5a'
+    : (preset === TEXTURE_PRESET.SANDSTONE ? '#b8956d' : PALETTE.wallTop);
+  const wallMortar = preset === TEXTURE_PRESET.VOLCANIC ? 'rgba(42, 26, 26, 0.55)'
+    : (preset === TEXTURE_PRESET.SANDSTONE ? 'rgba(72, 58, 41, 0.45)' : PALETTE.wallMortar);
+
+  ctx.fillStyle = wallBase;
+  ctx.fillRect(x, y, CELL, CELL);
+
+  // Inner carved block gives a new obstacle texture profile.
+  ctx.fillStyle = preset === TEXTURE_PRESET.VOLCANIC
+    ? 'rgba(64, 48, 47, 0.88)'
+    : (preset === TEXTURE_PRESET.SANDSTONE ? 'rgba(138, 110, 80, 0.84)' : 'rgba(74, 61, 51, 0.86)');
+  ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
+
+  ctx.strokeStyle = preset === TEXTURE_PRESET.SANDSTONE ? 'rgba(60, 44, 31, 0.48)' : 'rgba(26, 20, 16, 0.55)';
+  ctx.strokeRect(x + 2.5, y + 2.5, CELL - 5, CELL - 5);
+
+  if (!northBlocked) {
+    ctx.fillStyle = wallTop;
+    ctx.fillRect(x, y, CELL, 3);
+    ctx.fillStyle = preset === TEXTURE_PRESET.VOLCANIC
+      ? 'rgba(255, 194, 162, 0.18)'
+      : 'rgba(255, 232, 190, 0.22)';
+    ctx.fillRect(x, y, CELL, 1.5);
+  }
+
+  if (!westBlocked) {
+    ctx.fillStyle = preset === TEXTURE_PRESET.VOLCANIC
+      ? 'rgba(170, 128, 112, 0.26)'
+      : 'rgba(177, 151, 125, 0.30)';
+    ctx.fillRect(x, y, 1.5, CELL);
+  }
+
+  if (!eastBlocked) {
+    ctx.fillStyle = preset === TEXTURE_PRESET.SANDSTONE ? 'rgba(52, 40, 30, 0.34)' : 'rgba(31, 24, 20, 0.38)';
+    ctx.fillRect(x + CELL - 1.5, y, 1.5, CELL);
+  }
+
+  if (!southBlocked) {
+    ctx.fillStyle = preset === TEXTURE_PRESET.VOLCANIC ? 'rgba(22, 14, 14, 0.56)' : 'rgba(23, 18, 14, 0.52)';
+    ctx.fillRect(x, y + CELL - 2, CELL, 2);
+  }
+
+  ctx.strokeStyle = wallMortar;
+  ctx.lineWidth = 1;
+  for (let ly = 5; ly < CELL; ly += 5) {
+    ctx.beginPath();
+    ctx.moveTo(x + 1, y + ly + 0.5);
+    ctx.lineTo(x + CELL - 1, y + ly + 0.5);
+    ctx.stroke();
+  }
+
+  const rowOffset = (gy % 2 === 0) ? 3 : 0;
+  for (let lx = rowOffset; lx < CELL; lx += 6) {
+    ctx.beginPath();
+    ctx.moveTo(x + lx + 0.5, y + 1);
+    ctx.lineTo(x + lx + 0.5, y + CELL - 1);
+    ctx.stroke();
+  }
+
+  // Rune-like nicks so walls are not repetitive.
+  if (tileNoise(gx, gy, 181) > 0.62) {
+    ctx.strokeStyle = preset === TEXTURE_PRESET.VOLCANIC
+      ? 'rgba(225, 128, 82, 0.24)'
+      : (preset === TEXTURE_PRESET.SANDSTONE ? 'rgba(224, 198, 135, 0.20)' : 'rgba(200, 171, 130, 0.22)');
+    ctx.beginPath();
+    ctx.moveTo(x + 6, y + 7);
+    ctx.lineTo(x + 9, y + 9);
+    ctx.lineTo(x + 7, y + 12);
+    ctx.stroke();
+  }
+}
 
 function draw(ts) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -647,38 +1009,19 @@ function drawVisibilityMask() {
 
   const px = player.x * CELL + CELL / 2;
   const py = player.y * CELL + CELL / 2;
+  const brightRadiusTiles = PARTIAL_VIEW_NEIGHBORHOOD_CELLS;
+  const brightRadiusPx = brightRadiusTiles * CELL;
 
-  // Hard fog-of-war: keep local neighborhood visible and fully black out all distant cells.
+  // Strict pixel-space radial fog: bright center, smooth falloff, fully dark beyond 4 tiles.
   ctx.save();
-  for (let gy = 0; gy < ROWS; gy++) {
-    for (let gx = 0; gx < COLS; gx++) {
-      const chebyshev = Math.max(Math.abs(gx - player.x), Math.abs(gy - player.y));
-
-      let alpha;
-      if (chebyshev <= 1) {
-        alpha = 0.0; // fully visible core around player
-      } else if (chebyshev <= PARTIAL_VIEW_NEIGHBORHOOD_CELLS) {
-        alpha = 0.03; // bright visibility up to 3 tiles
-      } else {
-        alpha = 1.0; // completely dark and not visible outside neighborhood
-      }
-
-      ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`;
-      ctx.fillRect(gx * CELL, gy * CELL, CELL, CELL);
-    }
-  }
-
-  // Small soft glow confined to local neighborhood for readability.
-  ctx.globalCompositeOperation = 'lighter';
-  const glowRadius = CELL * PARTIAL_VIEW_NEIGHBORHOOD_CELLS;
-  const glow = ctx.createRadialGradient(px, py, 0, px, py, glowRadius);
-  glow.addColorStop(0.0, 'rgba(0, 245, 196, 0.16)');
-  glow.addColorStop(0.6, 'rgba(0, 245, 196, 0.05)');
-  glow.addColorStop(1.0, 'rgba(0, 245, 196, 0.00)');
-  ctx.fillStyle = glow;
-  ctx.beginPath();
-  ctx.arc(px, py, glowRadius, 0, Math.PI * 2);
-  ctx.fill();
+  const fog = ctx.createRadialGradient(px, py, 0, px, py, brightRadiusPx);
+  fog.addColorStop(0.00, 'rgba(0, 0, 0, 0.02)');
+  fog.addColorStop(0.40, 'rgba(0, 0, 0, 0.10)');
+  fog.addColorStop(0.70, 'rgba(0, 0, 0, 0.40)');
+  fog.addColorStop(0.92, 'rgba(0, 0, 0, 0.78)');
+  fog.addColorStop(1.00, 'rgba(0, 0, 0, 1.00)');
+  ctx.fillStyle = fog;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.restore();
 }
 
@@ -704,6 +1047,28 @@ export function getVisibilityMode() {
   return visibilityMode;
 }
 
+function normalizeTexturePreset(preset) {
+  return TEXTURE_PRESET_ORDER.includes(preset) ? preset : TEXTURE_PRESET.CRYPT;
+}
+
+export function setTexturePreset(preset) {
+  const next = normalizeTexturePreset(preset);
+  if (next === texturePreset) return texturePreset;
+  texturePreset = next;
+  emit('texturePresetChange', { preset: texturePreset });
+  return texturePreset;
+}
+
+export function toggleTexturePreset() {
+  const idx = TEXTURE_PRESET_ORDER.indexOf(texturePreset);
+  const next = TEXTURE_PRESET_ORDER[(idx + 1) % TEXTURE_PRESET_ORDER.length];
+  return setTexturePreset(next);
+}
+
+export function getTexturePreset() {
+  return texturePreset;
+}
+
 export function setDeterministicMode(enabled) {
   deterministicMode = Boolean(enabled);
   emit('deterministicChange', { deterministic: deterministicMode });
@@ -714,35 +1079,49 @@ export function getDeterministicMode() {
   return deterministicMode;
 }
 
+function clampPlayerMoveMs(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return playerMoveMs;
+  return Math.max(MIN_PLAYER_MOVE_MS, Math.min(MAX_PLAYER_MOVE_MS, Math.round(n)));
+}
+
+export function setPlayerMoveMs(value) {
+  const next = clampPlayerMoveMs(value);
+  if (next === playerMoveMs) return playerMoveMs;
+  playerMoveMs = next;
+  emit('playerSpeedChange', {
+    moveMs: playerMoveMs,
+    tilesPerSecond: 1000 / playerMoveMs,
+  });
+  return playerMoveMs;
+}
+
+export function adjustPlayerMoveMs(stepCount) {
+  const delta = Number(stepCount) * PLAYER_SPEED_STEP_MS;
+  if (!Number.isFinite(delta) || delta === 0) return playerMoveMs;
+  return setPlayerMoveMs(playerMoveMs + delta);
+}
+
+export function getPlayerMoveMs() {
+  return playerMoveMs;
+}
+
 function drawBackground() {
-  ctx.fillStyle = PALETTE.bg;
+  ctx.fillStyle = PALETTE.void;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  ctx.fillStyle = PALETTE.gridLine;
-  for (let r = 0; r <= ROWS; r++)
-    for (let c = 0; c <= COLS; c++) {
-      ctx.fillRect(c * CELL - 0.5, r * CELL - 0.5, 1, 1);
+  for (let gy = 0; gy < ROWS; gy++) {
+    for (let gx = 0; gx < COLS; gx++) {
+      if (isBlocked(gx, gy)) continue;
+      drawFloorTile(gx, gy);
     }
+  }
 }
 
 function drawObstacles() {
   for (const key of OBSTACLES) {
     const [cx, cy] = key.split(',').map(Number);
-    const x = cx * CELL, y = cy * CELL;
-
-    ctx.fillStyle = PALETTE.obstacle;
-    ctx.fillRect(x, y, CELL, CELL);
-
-    ctx.strokeStyle = PALETTE.obstacleEdge;
-    ctx.lineWidth   = 1;
-    ctx.strokeRect(x + 1.5, y + 1.5, CELL - 3, CELL - 3);
-
-    ctx.fillStyle = PALETTE.obstacleEdge;
-    for (const [ox, oy] of [[3,3],[CELL-5,3],[3,CELL-5],[CELL-5,CELL-5]]) {
-      ctx.beginPath();
-      ctx.arc(x + ox, y + oy, 1.2, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    drawWallTile(cx, cy);
   }
 }
 
@@ -760,10 +1139,92 @@ function drawTrail(trail, colorFn, solidColor) {
   }
 }
 
+function drawCharacterSprite(sprite, cx, cy) {
+  if (!sprite || !sprite.source) return false;
+
+  const destH = CELL * CHARACTER_SCALE;
+  const aspect = sprite.sw / sprite.sh;
+  const destW = destH * aspect;
+
+  const x = cx - destW / 2;
+  const y = cy - destH / 2 + CELL * 0.05;
+
+  // Grounded shadow helps sprite readability on noisy floor tiles.
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+  const shadowW = Math.max(10, destW * 0.56);
+  ctx.fillRect(cx - shadowW / 2, cy + destH * 0.25, shadowW, 2.6);
+
+  ctx.drawImage(
+    sprite.source,
+    sprite.sx,
+    sprite.sy,
+    sprite.sw,
+    sprite.sh,
+    x,
+    y,
+    destW,
+    destH
+  );
+
+  return true;
+}
+
+function drawHeroSprite(cx, cy, baseColor) {
+  const left = Math.round(cx - 6);
+  const top = Math.round(cy - 7);
+  ctx.fillStyle = 'rgba(20, 12, 8, 0.55)';
+  ctx.fillRect(left + 1, top + 13, 10, 3);
+
+  ctx.fillStyle = '#3e2d20';
+  ctx.fillRect(left + 2, top + 10, 3, 3);
+  ctx.fillRect(left + 7, top + 10, 3, 3);
+
+  ctx.fillStyle = baseColor;
+  ctx.fillRect(left + 1, top + 5, 10, 7);
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.fillRect(left + 2, top + 6, 2, 5);
+
+  ctx.fillStyle = '#f4d9b2';
+  ctx.fillRect(left + 4, top + 2, 4, 3);
+  ctx.fillStyle = '#2d1d13';
+  ctx.fillRect(left + 5, top + 3, 1, 1);
+  ctx.fillRect(left + 7, top + 3, 1, 1);
+  ctx.fillStyle = '#7f633f';
+  ctx.fillRect(left + 3, top + 1, 6, 1);
+}
+
+function drawEnemySprite(cx, cy, baseColor) {
+  const left = Math.round(cx - 6);
+  const top = Math.round(cy - 7);
+  ctx.fillStyle = 'rgba(20, 12, 8, 0.55)';
+  ctx.fillRect(left + 1, top + 13, 10, 3);
+
+  ctx.fillStyle = baseColor;
+  ctx.fillRect(left + 1, top + 4, 10, 8);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(left + 2, top + 9, 8, 2);
+
+  ctx.fillStyle = '#6f2f24';
+  ctx.beginPath();
+  ctx.moveTo(left + 3, top + 4);
+  ctx.lineTo(left + 4, top + 1);
+  ctx.lineTo(left + 6, top + 4);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(left + 9, top + 4);
+  ctx.lineTo(left + 8, top + 1);
+  ctx.lineTo(left + 6, top + 4);
+  ctx.fill();
+
+  ctx.fillStyle = '#ffe5a8';
+  ctx.fillRect(left + 4, top + 6, 1, 1);
+  ctx.fillRect(left + 7, top + 6, 1, 1);
+}
+
 function drawCharacter(entity, color, glowFn, isIT, label) {
   const cx = entity.x * CELL + CELL / 2;
   const cy = entity.y * CELL + CELL / 2;
-  const r  = CELL * 0.36;
+  const r  = CELL * 0.46;
 
   const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 3);
   grd.addColorStop(0,   glowFn + '0.30)');
@@ -772,28 +1233,29 @@ function drawCharacter(entity, color, glowFn, isIT, label) {
   ctx.fillStyle = grd;
   ctx.beginPath(); ctx.arc(cx, cy, r * 3, 0, Math.PI * 2); ctx.fill();
 
-  ctx.fillStyle = color;
-  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  const sprite = label === 'YOU' ? characterSprites.player : characterSprites.ai;
+  const drewSprite = drawCharacterSprite(sprite, cx, cy);
+  if (!drewSprite) {
+    if (label === 'YOU') {
+      drawHeroSprite(cx, cy, color);
+    } else {
+      drawEnemySprite(cx, cy, color);
+    }
+  }
 
   if (isIT) {
-    ctx.strokeStyle = PALETTE.itRing;
-    ctx.lineWidth   = 2;
-    ctx.setLineDash([4, 3]);
-    ctx.beginPath(); ctx.arc(cx, cy, r + 5, 0, Math.PI * 2); ctx.stroke();
-    ctx.setLineDash([]);
+    const ty = entity.y * CELL - 3;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(cx - 8, ty - 8, 16, 10);
 
     ctx.fillStyle = PALETTE.itRing;
     ctx.font = 'bold 8px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('◆ IT', cx, entity.y * CELL - 2);
+    ctx.fillText('IT', cx, ty);
   }
 
-  ctx.fillStyle = '#07080f';
-  ctx.beginPath(); ctx.arc(cx - 3, cy - 2, 2.2, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(cx + 3, cy - 2, 2.2, 0, Math.PI * 2); ctx.fill();
-
   if (!isIT) {
-    ctx.fillStyle = color;
+    ctx.fillStyle = '#f1e4c7';
     ctx.font = '7px monospace';
     ctx.textAlign = 'center';
     ctx.globalAlpha = 0.7;
@@ -821,9 +1283,18 @@ function startTimer() {
 
 export async function init() {
   emit('loading', { message: 'Loading AI model…' });
-  agentRunner = await createAgent();
+  const [loadedAgent] = await Promise.all([
+    createAgent(),
+    preloadCharacterSprites(),
+  ]);
+  agentRunner = loadedAgent;
   emit('visibilityChange', { mode: visibilityMode });
+  emit('texturePresetChange', { preset: texturePreset });
   emit('deterministicChange', { deterministic: deterministicMode });
+  emit('playerSpeedChange', {
+    moveMs: playerMoveMs,
+    tilesPerSecond: 1000 / playerMoveMs,
+  });
   emit('loading', {
     message: agentRunner.constructor.name === 'AgentRunner'
       ? '✓ ONNX model loaded'

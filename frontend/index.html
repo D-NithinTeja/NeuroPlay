@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GAME OF TAGS</title>
+<title>Neuroplay</title>
 
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
 <link rel="stylesheet" href="style.css">
@@ -12,8 +12,8 @@
 <body>
 
 <header>
-  <h1>GAME OF TAGS</h1>
-  <p class="tagline">RL-powered arena &nbsp;·&nbsp; onnxruntime-web</p>
+  <h1>Neuroplay</h1>
+  <p class="tagline">Torchlit hunt in the old ruins</p>
 </header>
 
 <div class="hud" aria-label="Game HUD">
@@ -41,7 +41,7 @@
   <div class="tag-flash" id="tag-flash"></div>
 
   <div class="overlay show" id="overlay">
-    <div class="overlay-title" id="ov-title" style="color:var(--bright)">GAME OF TAGS</div>
+    <div class="overlay-title" id="ov-title" style="color:var(--bright)">Neuroplay</div>
     <div class="overlay-sub"   id="ov-sub">Initialising AI…</div>
     <div class="overlay-score" id="ov-score" style="display:none">
       <div class="overlay-score-item">
@@ -54,34 +54,42 @@
       </div>
     </div>
     <button class="btn btn-primary" id="ov-btn" style="display:none" onclick="handleOverlayBtn()">
-      ▶ START
+      Begin Hunt
     </button>
   </div>
 </div>
 
 <div class="controls">
-  <button class="btn btn-primary" onclick="handleRestart()">↺ RESTART</button>
+  <button class="btn btn-primary" onclick="handleRestart()">Restart Quest</button>
   <button class="btn btn-ghost"   onclick="handleToggleDeterministic()" id="btn-det">
-    Mode: DETERMINISTIC
+    Mind: FATED
   </button>
   <button class="btn btn-ghost"   onclick="handleToggleVisibility()" id="btn-view">
-    View: FULL GRID
+    Sight: FULL MAP
   </button>
+  <button class="btn btn-ghost"   onclick="handleToggleTexturePreset()" id="btn-texture">
+    Stone: CRYPT
+  </button>
+  <div class="speed-control" aria-label="Player speed control">
+    <button class="btn btn-ghost btn-speed" onclick="handlePlayerSpeedDown()" title="Slower">-</button>
+    <span class="speed-value" id="speed-value">Pace: 9.1 t/s (110ms)</span>
+    <button class="btn btn-ghost btn-speed" onclick="handlePlayerSpeedUp()" title="Faster">+</button>
+  </div>
 </div>
 
 <div class="status-bar">
   <span>
     <span class="status-dot" id="status-dot"></span>
-    <span id="status-text">loading…</span>
+    <span id="status-text">attuning runes...</span>
   </span>
-  <span id="status-inference">inference: —</span>
+  <span id="status-inference">oracle: --</span>
 </div>
 
 <div class="legend">
   <span><span class="legend-dot" style="background:var(--player)"></span>You</span>
   <span><span class="legend-dot" style="background:var(--ai)"></span>AI</span>
   <span><span class="legend-dot" style="background:var(--it); border-radius:0"></span>IT (chaser)</span>
-  <span><span class="legend-dot" style="background:#1c2040; border:1px solid #2a2d50"></span>Wall</span>
+  <span><span class="legend-dot" style="background:#5c4c3f; border:1px solid #3a3028"></span>Wall</span>
 </div>
 
 <div class="dpad">
@@ -114,8 +122,13 @@ import {
   releaseKey,
   toggleVisibilityMode,
   getVisibilityMode,
+  toggleTexturePreset,
+  getTexturePreset,
   setDeterministicMode,
   getDeterministicMode,
+  adjustPlayerMoveMs,
+  setPlayerMoveMs,
+  getPlayerMoveMs,
 } from './game.js';
 
 window.pressKey   = pressKey;
@@ -133,14 +146,14 @@ Events.addEventListener('loading', e => {
 
     if (usingOnnx) {
       dot.classList.add('on');
-      txt.textContent = 'ONNX model active';
+      txt.textContent = 'oracle stone attuned';
     } else {
       dot.classList.add('err');
-      txt.textContent = 'Fallback agent (no model)';
+      txt.textContent = 'fallback scout active';
     }
 
-    document.getElementById('ov-title').textContent = 'GAME OF TAGS';
-    document.getElementById('ov-sub').textContent   = 'Catch the AI • WASD / Arrow keys';
+    document.getElementById('ov-title').textContent = 'Neuroplay';
+    document.getElementById('ov-sub').textContent   = 'Hunt your rival with WASD or arrow keys';
     document.getElementById('ov-btn').style.display = 'inline-block';
   }
 });
@@ -183,8 +196,16 @@ Events.addEventListener('visibilityChange', e => {
   updateVisibilityButton(e.detail.mode);
 });
 
+Events.addEventListener('texturePresetChange', e => {
+  updateTexturePresetButton(e.detail.preset);
+});
+
 Events.addEventListener('deterministicChange', e => {
   updateDeterministicButton(e.detail.deterministic);
+});
+
+Events.addEventListener('playerSpeedChange', e => {
+  updatePlayerSpeedLabel(e.detail.moveMs, e.detail.tilesPerSecond);
 });
 
 Events.addEventListener('gameover', e => {
@@ -208,11 +229,11 @@ Events.addEventListener('gameover', e => {
     titleEl.style.color  = 'var(--bright)';
   }
 
-  document.getElementById('ov-sub').textContent = `Inference avg: ${avgInferenceMs}ms`;
-  document.getElementById('ov-btn').textContent = '↺ PLAY AGAIN';
+  document.getElementById('ov-sub').textContent = `Oracle delay: ${avgInferenceMs}ms`;
+  document.getElementById('ov-btn').textContent = 'Begin Again';
   document.getElementById('ov-btn').style.display = 'inline-block';
   document.getElementById('overlay').classList.add('show');
-  document.getElementById('status-inference').textContent = `inference: ${avgInferenceMs}ms avg`;
+  document.getElementById('status-inference').textContent = `oracle: ${avgInferenceMs}ms avg`;
 });
 
 window.handleOverlayBtn = () => { startGame(); };
@@ -228,16 +249,43 @@ window.handleToggleVisibility = () => {
   updateVisibilityButton(mode);
 };
 
+window.handleToggleTexturePreset = () => {
+  const preset = toggleTexturePreset();
+  updateTexturePresetButton(preset);
+};
+
+window.handlePlayerSpeedDown = () => {
+  // "-" means slower pace (larger move interval).
+  adjustPlayerMoveMs(1);
+};
+
+window.handlePlayerSpeedUp = () => {
+  // "+" means faster pace (smaller move interval).
+  adjustPlayerMoveMs(-1);
+};
+
 function updateVisibilityButton(mode = getVisibilityMode()) {
   const isPartial = mode === 'partial';
   document.getElementById('btn-view').textContent =
-    `View: ${isPartial ? 'NEIGHBORHOOD' : 'FULL GRID'}`;
+    `Sight: ${isPartial ? 'TORCHLIGHT' : 'FULL MAP'}`;
+}
+
+function updateTexturePresetButton(preset = getTexturePreset()) {
+  const name = preset === 'volcanic'
+    ? 'VOLCANIC'
+    : (preset === 'sandstone' ? 'SANDSTONE' : 'CRYPT');
+  document.getElementById('btn-texture').textContent = `Stone: ${name}`;
 }
 
 function updateDeterministicButton(mode = getDeterministicMode()) {
   deterministicMode = mode;
   document.getElementById('btn-det').textContent =
-    `Mode: ${deterministicMode ? 'DETERMINISTIC' : 'STOCHASTIC'}`;
+    `Mind: ${deterministicMode ? 'FATED' : 'CHAOTIC'}`;
+}
+
+function updatePlayerSpeedLabel(moveMs = getPlayerMoveMs(), tilesPerSecond = 1000 / moveMs) {
+  document.getElementById('speed-value').textContent =
+    `Pace: ${tilesPerSecond.toFixed(1)} t/s (${moveMs}ms)`;
 }
 
 function flashScreen(color) {
@@ -257,8 +305,11 @@ function pulse(id) {
 
 init();
 setDeterministicMode(deterministicMode);
+setPlayerMoveMs(getPlayerMoveMs());
 updateDeterministicButton();
 updateVisibilityButton();
+updateTexturePresetButton();
+updatePlayerSpeedLabel();
 </script>
 </body>
 </html>
