@@ -1,102 +1,118 @@
 # Neuroplay
 
-Neuroplay is a browser-based tag game where both runner and chaser behaviors can be learned with PPO, exported to ONNX, and executed in-browser with onnxruntime-web.
+Neuroplay is a browser-based tag game with an RL training/export pipeline.
+Runner and chaser policies can be trained with PPO and exported to ONNX for browser inference.
 
 ## Project Layout
 
 ```text
 Neuroplay/
-├── frontend/                     ← Browser game client (UI + gameplay loop)
-│   ├── index.html               ← HUD, controls, and app wiring
-│   ├── game.js                  ← Game state machine, movement, role switching, rendering
-│   ├── agent.js                 ← ONNX runtime loader/inference and fallback logic
-│   └── style.css                ← Visual theme and responsive layout styles
-├── training/                     ← RL training and model export pipeline
-│   ├── env.py                   ← Gymnasium environment, observations, and reward shaping
-│   ├── train.py                 ← PPO training/evaluation entrypoint (runner/chaser roles)
-│   ├── export_onnx.py           ← SB3 checkpoint to ONNX exporter (+ norm stats)
-│   └── playtest_loops.py        ← Loop/oscillation diagnostics for trained behavior
-├── model/                        ← Frontend-consumed ONNX artifacts
-│   ├── tag_agent.onnx           ← Runner policy model used when AI is evader
-│   ├── norm_stats.json          ← Runner observation normalization stats
-│   ├── tag_chaser.onnx          ← Chaser policy model used when AI is IT/chaser
-│   └── norm_stats_chaser.json   ← Chaser observation normalization stats
-├── pyproject.toml                ← Project metadata, dependencies, and uv indexes/sources
-└── README.md                     ← Usage, training/export guide, and design notes
+├── frontend/
+│   ├── index.html              # UI, controls, and game-page wiring
+│   ├── game.js                 # Main loop, rendering, visibility mask, control state
+│   ├── agent.js                # ONNX loading, normalization, inference, path helpers
+│   ├── style.css               # Theme and responsive layout
+│   └── assets/
+│       ├── user.png            # Player sprite
+│       └── AI.png              # AI sprite
+├── training/
+│   ├── env.py                  # Gymnasium env + reward shaping
+│   ├── train.py                # PPO training/eval entrypoint
+│   ├── export_onnx.py          # SB3 -> ONNX export + norm stats
+│   └── playtest_loops.py       # Behavior diagnostics
+├── model/
+│   ├── tag_agent.onnx
+│   ├── norm_stats.json
+│   ├── tag_chaser.onnx
+│   └── norm_stats_chaser.json
+├── pyproject.toml
+└── README.md
 ```
 
 ## Setup (uv)
 
-From repository root:
+Run from repository root:
 
 ```bash
 uv sync
 ```
 
-If you need to add missing packages:
+If you need extra dependencies:
 
 ```bash
 uv add stable-baselines3[extra] gymnasium torch onnx onnxruntime tensorboard
+```
+
+## Run Frontend
+
+Serve the repo root (ES modules require HTTP):
+
+```bash
+uv run python -m http.server 8080
+```
+
+Open:
+
+- http://localhost:8080/frontend/
+
+## Frontend Controls
+
+The current page controls are:
+
+- `Restart Quest`: resets the current match.
+- `Mind`: toggles deterministic vs stochastic runner-model action selection.
+- `Sight`: toggles `FULL MAP` vs `TORCHLIGHT` visibility.
+- `Stone`: cycles texture presets (`CRYPT`, `VOLCANIC`, `SANDSTONE`).
+- `Pace` `- / +`: slows down or speeds up player movement.
+
+Keyboard controls:
+
+- Movement: `WASD` or arrow keys.
+- Visibility quick toggle: `V`.
+
+## Frontend Runtime Notes (Important)
+
+- Player default speed is `110 ms` per move.
+- AI move interval is `170 ms` per move.
+- Torchlight visibility is strict radial fog with a 4-tile pixel-space radius.
+- AI evasion uses the runner ONNX policy (`model/tag_agent.onnx`).
+- AI chaser behavior currently uses robust BFS chase logic in `frontend/game.js`.
+- A chaser ONNX inference path exists in `frontend/agent.js`, but default match flow is BFS chaser at runtime.
+
+## URL Query Parameters
+
+Optional frontend URL flags:
+
+- `view=partial` starts in torchlight mode.
+- `texture=crypt|volcanic|sandstone` sets initial floor/wall texture preset.
+- `chaser=bfs` is accepted by code path checks (currently behavior-equivalent to default runtime).
+
+Example:
+
+```text
+http://localhost:8080/frontend/?view=partial&texture=volcanic
 ```
 
 ## Training
 
 Training supports two roles:
 
-- runner: policy learns to evade.
-- chaser: policy learns to tag.
+- `runner`
+- `chaser`
 
-### Reward shaping
-
-These tables mirror the current implementation in `training/env.py` and are intended to be easy to extend.
-
-Runner role (`--role runner`)
-
-| Condition | Reward Formula | Intent |
-|---|---|---|
-| Every step | `+0.05` | Encourage survival over time |
-| Distance change | `+(dist_t - dist_{t-1}) * 0.3` | Reward increasing separation from chaser |
-| Distance threshold | `+0.2 if dist > 10 else +0.1 if dist > 6` | Favor staying in safer spacing zones |
-| Hit wall | `-0.1` | Discourage invalid/tight movement |
-| Danger zone | `-0.4 if dist <= 3` | Penalize getting too close |
-| Critical danger | `-0.8 if dist <= 2` | Strongly penalize near-capture states |
-| Oscillation detected | `-0.15` | Reduce 2-cycle loop behavior |
-| Tagged (terminal) | `-20.0` | Strong failure signal |
-| Episode timeout without tag | `+5.0` | Reward full-episode survival |
-
-Chaser role (`--role chaser`)
-
-| Condition | Reward Formula | Intent |
-|---|---|---|
-| Every step | `-0.02` | Add urgency; discourage stalling |
-| Distance change | `+(dist_{t-1} - dist_t) * 0.5` | Reward closing distance to target |
-| In range | `+0.1 if dist <= 6` | Encourage sustained pressure |
-| Close range | `+0.2 if dist <= 3` | Encourage finishing approach |
-| Hit wall | `-0.1` | Discourage poor pathing |
-| Oscillation detected | `-0.1` | Reduce looping in obstacle pockets |
-| Tagged target (terminal) | `+20.0` | Strong success signal |
-| Episode timeout without tag | `-5.0` | Penalize failure to finish |
-
-Notes for contributors
-
-- Keep formulas in this section synchronized with `TagEnv.step()` in `training/env.py`.
-- Prefer adding new terms as new rows instead of overloading existing rows.
-- If a term is role-specific, add it only to the relevant table.
-- When changing reward weights, update both code and this table in the same PR/commit.
-
-### Train runner policy
+Train runner:
 
 ```bash
 uv run python training/train.py --role runner --timesteps 300000 --device cuda
 ```
 
-### Train chaser policy
+Train chaser:
 
 ```bash
 uv run python training/train.py --role chaser --timesteps 300000 --device cuda
 ```
 
-### Useful flags
+Useful flags:
 
 ```bash
 uv run python training/train.py --role runner --resume
@@ -104,23 +120,9 @@ uv run python training/train.py --role chaser --eval
 uv run python training/train.py --role runner --eval-only
 ```
 
-### Role-specific outputs
-
-Runner:
-
-- training/models/best_model/best_model.zip
-- training/models/tag_agent_final.zip
-- training/models/vecnormalize.pkl
-
-Chaser:
-
-- training/models/best_model_chaser/best_model.zip
-- training/models/tag_chaser_final.zip
-- training/models/vecnormalize_chaser.pkl
-
 ## Export to ONNX
 
-### Export runner ONNX
+Runner export:
 
 ```bash
 uv run python training/export_onnx.py --role runner --verify
@@ -128,10 +130,10 @@ uv run python training/export_onnx.py --role runner --verify
 
 Creates:
 
-- model/tag_agent.onnx
-- model/norm_stats.json
+- `model/tag_agent.onnx`
+- `model/norm_stats.json`
 
-### Export chaser ONNX
+Chaser export:
 
 ```bash
 uv run python training/export_onnx.py --role chaser --verify
@@ -139,10 +141,10 @@ uv run python training/export_onnx.py --role chaser --verify
 
 Creates:
 
-- model/tag_chaser.onnx
-- model/norm_stats_chaser.json
+- `model/tag_chaser.onnx`
+- `model/norm_stats_chaser.json`
 
-### Custom export paths
+Custom export example:
 
 ```bash
 uv run python training/export_onnx.py \
@@ -154,34 +156,16 @@ uv run python training/export_onnx.py \
   --verify
 ```
 
-## Run Frontend
+## Evaluation and Diagnostics
 
-The app uses ES modules, so serve over HTTP from repository root:
-
-```bash
-uv run python -m http.server 8080
-```
-
-Open:
-
-- http://localhost:8080/frontend/
-
-## Runtime Behavior
-
-- When AI is runner, frontend uses model/tag_agent.onnx.
-- When AI is chaser, frontend tries model/tag_chaser.onnx.
-- If chaser ONNX is missing, frontend falls back to heuristic/BFS chase logic.
-
-## Evaluation and Playtests
-
-Evaluate a trained role policy:
+Role eval:
 
 ```bash
 uv run python training/train.py --role runner --eval-only
 uv run python training/train.py --role chaser --eval-only
 ```
 
-Loop and oscillation playtest:
+Loop/oscillation playtest:
 
 ```bash
 uv run python training/playtest_loops.py --episodes 30
@@ -192,3 +176,12 @@ TensorBoard:
 ```bash
 uv run tensorboard --logdir training/logs
 ```
+
+## Updating This README
+
+If gameplay or controls change, update this file in the same change set.
+In particular, keep these aligned with code:
+
+- `frontend/index.html` control labels and handlers.
+- `frontend/game.js` runtime behavior and defaults.
+- `training/env.py` reward logic.
